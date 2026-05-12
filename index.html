@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Motion Challenge - Pose Edition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8/dist/teachablemachine-pose.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #020617; color: white; overflow-x: hidden; }
+        .video-container { position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; border-radius: 1.5rem; }
+        .video-container iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        #webcam-container { transform: scaleX(-1); border: 4px solid #1e293b; border-radius: 1.5rem; overflow: hidden; position: relative; background: #000; }
+        #webcam-container canvas { width: 100% !important; height: auto !important; }
+        .success-glow { box-shadow: 0 0 40px #10b981; border-color: #10b981 !important; }
+        .mission-pulse { animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <header class="flex flex-col md:flex-row justify-between items-center mb-8 gap-6">
+            <div>
+                <h1 class="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-600 italic">POZE CHALLENGE</h1>
+                <p class="text-slate-400 mt-2">사용자의 관절을 실시간 추적하여 동작을 분석합니다.</p>
+            </div>
+            <div class="flex gap-4">
+                <div class="bg-slate-900/80 backdrop-blur border border-slate-800 p-4 rounded-3xl text-center min-w-[140px] shadow-2xl">
+                    <span class="block text-xs text-slate-500 font-bold uppercase tracking-widest">Score</span>
+                    <span id="score" class="text-4xl font-black text-cyan-400">0</span>
+                </div>
+                <div class="bg-slate-900/80 backdrop-blur border border-slate-800 p-4 rounded-3xl text-center min-w-[140px] shadow-2xl">
+                    <span class="block text-xs text-slate-500 font-bold uppercase tracking-widest">Accuracy</span>
+                    <span id="accuracy" class="text-4xl font-black text-purple-400">0%</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            <div class="lg:col-span-8 space-y-6">
+                <div class="video-container shadow-2xl border-4 border-slate-900 bg-black" id="player-wrapper">
+                    <div id="player"></div> 
+                </div>
+
+                <div class="bg-slate-900 p-8 rounded-3xl border border-slate-800 flex items-center justify-between shadow-2xl overflow-hidden relative">
+                    <div class="relative z-10">
+                        <span class="text-cyan-400 font-bold text-sm mb-1 block">TARGET ACTION</span>
+                        <h2 id="current-target" class="text-5xl font-black text-white uppercase italic tracking-tighter">PREPARING...</h2>
+                    </div>
+                    <div id="feedback-icon" class="w-20 h-20 rounded-2xl bg-slate-800 flex items-center justify-center text-4xl shadow-inner transition-all duration-300 z-10">
+                        ⏳
+                    </div>
+                    <div id="mission-progress-bar" class="absolute bottom-0 left-0 h-2 bg-cyan-500 transition-all duration-100" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <div class="lg:col-span-4 space-y-6">
+                <div class="relative group">
+                    <div id="webcam-container" class="aspect-square flex items-center justify-center shadow-2xl">
+                        <div id="loading-spinner" class="text-center p-8">
+                            <div class="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-cyan-500 mx-auto mb-4"></div>
+                            <p class="font-bold text-slate-300">포즈 분석 모델 로딩 중...</p>
+                        </div>
+                    </div>
+                    <div class="absolute top-4 left-4 bg-cyan-600 text-white px-3 py-1 rounded-full text-xs font-black tracking-tighter animate-pulse shadow-lg">AI POSE TRACKING</div>
+                </div>
+
+                <div class="bg-slate-900 p-6 rounded-3xl border border-slate-800 shadow-xl space-y-4">
+                    <button id="start-btn" class="w-full bg-gradient-to-r from-cyan-600 to-blue-700 hover:from-cyan-500 hover:to-blue-600 text-white font-black py-5 px-6 rounded-2xl transition-all transform hover:scale-[1.02] active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed shadow-lg text-xl" disabled>
+                        챌린지 시작하기
+                    </button>
+                    
+                    <div class="bg-slate-950/50 p-4 rounded-2xl border border-slate-800/50">
+                        <h4 class="text-[10px] font-bold text-slate-500 uppercase mb-3 px-1 tracking-widest">Pose Probabilities</h4>
+                        <div id="label-container" class="space-y-3"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="message-box" class="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-cyan-500 text-white px-10 py-4 rounded-2xl font-black shadow-2xl z-50 hidden transition-all">
+        READY?
+    </div>
+
+    <script>
+        const MODEL_URL = "https://teachablemachine.withgoogle.com/models/fKBrc0g4T/"; 
+        const GAME_TIMELINE = [
+            { time: 0, action: "REST" },
+            { time: 4, action: "SAY HI" },
+            { time: 10, action: "WALK" },
+            { time: 20, action: "SWING" },
+            { time: 35, action: "PAW" },
+            { time: 45, action: "JUMP" },
+            { time: 55, action: "WALK" },
+            { time: 70, action: "SAY HI" },
+            { time: 85, action: "SWING" },
+            { time: 100, action: "REST" },
+            { time: 115, action: "PAW" },
+            { time: 130, action: "JUMP" },
+            { time: 150, action: "SAY HI" },
+            { time: 170, action: "REST" }
+        ];
+
+        let model, webcam, ctx, labelContainer, maxPredictions;
+        let score = 0;
+        let totalFrames = 0;
+        let correctFrames = 0;
+        let player;
+        let isGameRunning = false;
+        let animationId;
+
+        var tag = document.createElement('script');
+        tag.src = "https://www.youtube.com/iframe_api";
+        var firstScriptTag = document.getElementsByTagName('script')[0];
+        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+
+        function onYouTubeIframeAPIReady() {
+            player = new YT.Player('player', {
+                height: '100%',
+                width: '100%',
+                videoId: 'oRr5hxr_bRA',
+                playerVars: { 'autoplay': 0, 'controls': 0, 'modestbranding': 1, 'rel': 0, 'showinfo': 0, 'disablekb': 1, 'fs': 0 },
+                events: { 'onReady': () => checkReadyState() }
+            });
+        }
+
+        async function initAI() {
+            try {
+                const modelURL = MODEL_URL + "model.json";
+                const metadataURL = MODEL_URL + "metadata.json";
+
+                // Pose 라이브러리 사용으로 변경
+                model = await tmPose.load(modelURL, metadataURL);
+                maxPredictions = model.getTotalClasses();
+
+                const size = 400;
+                const flip = true;
+                webcam = new tmPose.Webcam(size, size, flip);
+                await webcam.setup();
+                await webcam.play();
+                
+                document.getElementById('loading-spinner').remove();
+                const canvas = webcam.canvas;
+                document.getElementById('webcam-container').appendChild(canvas);
+                ctx = canvas.getContext("2d");
+                
+                labelContainer = document.getElementById("label-container");
+                for (let i = 0; i < maxPredictions; i++) {
+                    const div = document.createElement("div");
+                    div.className = "space-y-1";
+                    div.innerHTML = `
+                        <div class="flex justify-between text-[10px] font-black uppercase tracking-tighter">
+                            <span class="text-slate-300">${model.getClassLabels()[i]}</span>
+                            <span class="prob-val text-cyan-400">0%</span>
+                        </div>
+                        <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                            <div class="bg-cyan-500 h-full transition-all duration-150" style="width: 0%"></div>
+                        </div>
+                    `;
+                    labelContainer.appendChild(div);
+                }
+
+                checkReadyState();
+                animationId = window.requestAnimationFrame(loop);
+            } catch (e) {
+                console.error("AI 초기화 실패:", e);
+                document.getElementById('loading-spinner').innerText = "모델 로드 실패 (포즈 모델인지 확인하세요)";
+            }
+        }
+
+        function checkReadyState() {
+            if (model && player && typeof player.playVideo === 'function') {
+                const btn = document.getElementById('start-btn');
+                btn.disabled = false;
+                btn.innerText = "챌린지 시작하기";
+            }
+        }
+
+        async function loop(timestamp) {
+            webcam.update(); 
+            await predict();
+            animationId = window.requestAnimationFrame(loop);
+        }
+
+        async function predict() {
+            // Pose 모델의 예측 방식: estimatePose -> predict
+            const { pose, posenetOutput } = await model.estimatePose(webcam.canvas);
+            const prediction = await model.predict(posenetOutput);
+
+            let bestClass = "";
+            let bestProb = 0;
+
+            for (let i = 0; i < maxPredictions; i++) {
+                const classPrediction = prediction[i].className;
+                const probability = prediction[i].probability;
+                
+                const labelDiv = labelContainer.childNodes[i];
+                labelDiv.querySelector('.prob-val').innerText = (probability * 100).toFixed(0) + "%";
+                labelDiv.querySelector('.bg-cyan-500').style.width = (probability * 100) + "%";
+
+                if (probability > bestProb) {
+                    bestProb = probability;
+                    bestClass = classPrediction;
+                }
+            }
+
+            drawPose(pose);
+
+            if (isGameRunning) {
+                updateGameLogic(bestClass, bestProb);
+            }
+        }
+
+        function drawPose(pose) {
+            if (webcam.canvas) {
+                ctx.drawImage(webcam.canvas, 0, 0);
+                if (pose) {
+                    const minPartConfidence = 0.5;
+                    tmPose.drawKeypoints(pose.keypoints, minPartConfidence, ctx);
+                    tmPose.drawSkeleton(pose.keypoints, minPartConfidence, ctx);
+                }
+            }
+        }
+
+        function updateGameLogic(detectedClass, probability) {
+            const currentTime = player.getCurrentTime();
+            let currentMission = "REST";
+
+            for (let i = GAME_TIMELINE.length - 1; i >= 0; i--) {
+                if (currentTime >= GAME_TIMELINE[i].time) {
+                    currentMission = GAME_TIMELINE[i].action;
+                    break;
+                }
+            }
+
+            const targetDisplay = document.getElementById('current-target');
+            targetDisplay.innerText = currentMission;
+            
+            totalFrames++;
+            const webcamBox = document.getElementById('webcam-container');
+            const feedbackIcon = document.getElementById('feedback-icon');
+
+            // 판정 기준 상향 (Pose 모델은 신뢰도가 높아야 함)
+            if (detectedClass === currentMission && probability > 0.8) {
+                score += 1;
+                correctFrames++;
+                webcamBox.classList.add('success-glow');
+                feedbackIcon.innerText = "🔥";
+                feedbackIcon.className = "w-20 h-20 rounded-2xl bg-cyan-500 flex items-center justify-center text-4xl shadow-lg transform scale-110";
+                targetDisplay.classList.add('text-cyan-400');
+            } else {
+                webcamBox.classList.remove('success-glow');
+                feedbackIcon.innerText = "👀";
+                feedbackIcon.className = "w-20 h-20 rounded-2xl bg-slate-800 flex items-center justify-center text-4xl shadow-inner";
+                targetDisplay.classList.remove('text-cyan-400');
+            }
+
+            document.getElementById('score').innerText = Math.floor(score / 5); // 점수 스케일 조정
+            const accuracy = ((correctFrames / totalFrames) * 100).toFixed(1);
+            document.getElementById('accuracy').innerText = accuracy + "%";
+        }
+
+        document.getElementById('start-btn').addEventListener('click', function() {
+            if (!isGameRunning) {
+                player.playVideo();
+                isGameRunning = true;
+                this.innerText = "챌린지 일시정지";
+                this.className = this.className.replace('from-cyan-600', 'from-red-600').replace('to-blue-700', 'to-orange-700');
+                showMessage("START! 동작을 정확히 따라하세요!");
+            } else {
+                player.pauseVideo();
+                isGameRunning = false;
+                this.innerText = "챌린지 다시 시작";
+                this.className = this.className.replace('from-red-600', 'from-cyan-600').replace('to-orange-700', 'to-blue-700');
+            }
+        });
+
+        function showMessage(msg) {
+            const box = document.getElementById('message-box');
+            box.innerText = msg;
+            box.classList.remove('hidden');
+            setTimeout(() => box.classList.add('hidden'), 3000);
+        }
+
+        window.onload = () => {
+            initAI();
+        };
+    </script>
+</body>
+</html>
